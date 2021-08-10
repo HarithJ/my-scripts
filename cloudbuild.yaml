@@ -1,0 +1,72 @@
+steps:
+# Pull container image to use it as a cache
+- id: Pull Image
+  name: 'gcr.io/cloud-builders/docker'
+  entrypoint: 'bash'
+  args: ['-c', 'docker pull gcr.io/$PROJECT_ID/${_IMAGE_NAME}:latest || exit 0']
+
+# Build container image and push to gcr
+- id: Build Image
+  name: 'gcr.io/cloud-builders/docker'
+  entrypoint: bash
+  args:
+  - '-c'
+  - |
+    docker build --target prod \
+      -t gcr.io/${PROJECT_ID}/${_IMAGE_NAME}:${COMMIT_SHA} \
+      -t gcr.io/${PROJECT_ID}/${_IMAGE_NAME}:latest \
+      --cache-from gcr.io/$PROJECT_ID/${_IMAGE_NAME}:latest \
+      . &&
+    docker push gcr.io/${PROJECT_ID}/${_IMAGE_NAME}:${COMMIT_SHA}
+
+# Install CLoud SQL proxy
+- id: proxy-install
+  name: alpine:3
+  entrypoint: sh
+  args:
+    - '-c'
+    - 'wget -O /workspace/cloud_sql_proxy https://storage.googleapis.com/cloudsql-proxy/v1.16/cloud_sql_proxy.linux.386 && chmod +x /workspace/cloud_sql_proxy'
+
+# Apply migrations if needed
+- id: Run Migrations
+  name: 'gcr.io/${PROJECT_ID}/${_IMAGE_NAME}:latest'
+  entrypoint: bash
+  args:
+  - '-c'
+  - |
+    if [[ -n "${_APPLY_MIGRATIONS}" && "${_APPLY_MIGRATIONS}" == "true" ]]; then
+      (/workspace/cloud_sql_proxy -dir=/workspace -instances=${_SQL_CONNECTION_NAME}=tcp:5432 & sleep 2) &&
+
+      echo $$ENV_VARS >> /tmp/.env &&
+      chmod +x /tmp/.env &&
+      source /tmp/.env &&
+
+      flask db upgrade -d migrations
+    fi
+  secretEnv: ['ENV_VARS']
+
+# Deploy to production when a production tag is present
+# and deploy to staging when merge happens to develop
+- id: Deploy
+  name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: bash
+  args:
+  - '-c'
+  - |
+    gcloud run deploy ${_CLOUDRUN_SERVICE_NAME} \
+      --image gcr.io/${PROJECT_ID}/${_IMAGE_NAME}:${COMMIT_SHA} \
+      --region europe-west1 --platform managed --allow-unauthenticated \
+      --set-env-vars PROJECT_ID=${PROJECT_ID},SECRET=${_SECRET},SECRET_VER=${_SECRET_VER},BQ_SERVICE_ACC=${_BQ_SERVICE_ACC},BQ_SERVICE_ACC_VER=${_BQ_SERVICE_ACC_VER} \
+      --service-account=pp-secret@last-mile-distribution.iam.gserviceaccount.com \
+      --cpu=1 --memory=2 --set-cloudsql-instances=${_SQL_CONNECTION_NAME}
+
+
+images: ['gcr.io/$PROJECT_ID/${_IMAGE_NAME}:latest']
+
+substitutions:
+  _IMAGE_NAME: app
+
+availableSecrets:
+  secretManager:
+  - versionName: projects/$PROJECT_ID/secrets/$_DB_MIGRATION_SECRET/versions/$_DB_MIGRATION_SECRET_VER
+    env: 'ENV_VARS'

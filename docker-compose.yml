@@ -1,0 +1,58 @@
+version: "3.8"
+services:
+
+  # Database container for development
+  db:
+    image: postgres:12.0-alpine
+    container_name: titanic-db
+    hostname: db
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: pwd
+      POSTGRES_USER: user
+      POSTGRES_DB: titanic
+
+
+  # app module container
+  app:
+    container_name: titanic
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    depends_on:
+      - db
+    volumes:
+      - .:/usr/src/app
+    env_file:
+      - .env
+    environment:
+      - SQLALCHEMY_DATABASE_URI=postgresql://user:pwd@db:5432/titanic
+    ports:
+      - "5000:5000"
+    command: flask run
+
+
+    # app module container
+  prod:
+    container_name: titanic-prod
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    depends_on:
+      - db
+    volumes:
+      - .:/usr/src/app
+    env_file:
+      - .env
+    environment:
+      - SQLALCHEMY_DATABASE_URI=postgresql://user:pwd@db:5432/titanic
+    ports:
+      - "8080:8080"
+    command: waitress-serve --call 'app:create_app'
+
+
+volumes:
+  db-data:
